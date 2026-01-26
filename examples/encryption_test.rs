@@ -27,6 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //generate the Nonce
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
+    println!("The nonce: {:02x?}", nonce);
+
     // Encryption
     let ciphertext = cipher
         .encrypt(&nonce, secret_password.expose_secret().as_bytes().as_ref())
