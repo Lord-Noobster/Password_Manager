@@ -26,17 +26,23 @@ pub struct VaultManager {
 }
 
 impl VaultManager {
-    pub fn new(auth_path: &Path, vault_path: &Path) -> Result<(), VaultError> {
-        //init logic
-        Ok(())
+    pub fn init(auth_path: &Path, vault_path: &Path) -> Result<Self, VaultError> {
+        let auth_conn = db::init_auth_db(auth_path)?;
+        let vault_conn = db::init_vault_db(vault_path)?;
+
+        Ok(Self {
+            auth_db: auth_conn,
+            vault_db: vault_conn,
+            active_keys: None,
+        })
     }
 
     pub fn handle_register(&self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
         let salt = crypto::generate_random_salt();
 
-        let keys = crypto::derive_keys(pass: &SecretString, salt);
+        let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
-        //db::save_new_user(&self.auth_db, username, &salt, &keys.k_auth)?;
+        db::save_new_user(&self.auth_db, user, &salt, &keys.k_auth)?;
         Ok(())
     }
 

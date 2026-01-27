@@ -1,10 +1,15 @@
 mod backend;
 mod frontend;
 
+use std::path::Path;
+
 use backend::VaultError;
 use frontend::ui_temp;
 
+use backend::VaultManager;
+
 fn main() -> Result<(), VaultError> {
+    let mut manager = VaultManager::init(Path::new("user.db"), Path::new("vault.db"))?;
     println!("Vault Engine: Initialized.");
 
     loop {
@@ -14,7 +19,7 @@ fn main() -> Result<(), VaultError> {
         match choice {
             "Register" => {
                 let (user, pass) = ui_temp::prompt_registration()?;
-                //manager.handle_register(&user, &pass)?; passes to the VaultManager in backend/mod.rs
+                manager.handle_register(&user, &pass)?; //passes to the VaultManager in backend/mod.rs
                 //backend::db::register_user(&conn, &user, &pass)?; or i handle it in the db.rs
             }
 
@@ -23,7 +28,6 @@ fn main() -> Result<(), VaultError> {
                 //manager.handle_login(&user, &pass)?;
                 //backend::logic::login_flow(&conn, &user, &pass)?;
             }
-
             "Exit" => break,
             _ => unreachable!(),
         }

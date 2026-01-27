@@ -43,11 +43,13 @@ pub fn generate_random_salt() -> [u8; 16] {
 pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultError> {
     let password_bytes = pass.expose_secret().as_bytes(); // the pass is now exposed
 
+    let salt = SaltString::encode_b64(salt)
+        .map_err(|e: argon2::password_hash::Error| VaultError::Argon2Error(e.to_string()))?;
     // Argon2 flow
     let argon2 = Argon2::default();
 
     let hash = argon2
-        .hash_password(password_bytes, salt)
+        .hash_password(password_bytes, &salt)
         .expect("KDF failed");
 
     let master_hash = hash.hash.expect("no hash output");
