@@ -77,4 +77,4 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     Ok(keys)
 }
 
-pub fn verify_keys() {}
+//pub fn verify_keys() {}

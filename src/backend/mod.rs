@@ -24,7 +24,11 @@ pub struct VaultManager {
     active_keys: Option<VaultKeys>, // Vaultkeys is a crypto variable containing a list with the
                                     // KEK and Search_key
 }
-
+// TODO: (v0.5) Implement Argon2 parameter persistence in DB
+// TODO: (v0.5) Sanitize usernames to prevent SQL injection/null-byte attacks
+// TODO: (v0.5) Obfuscate AuthFailure to prevent Username Enumeration
+// TODO: (v0.6) Implement hardware-backed entropy (USB Key Hardware ID) opt
+// TODO: (v0.7) Implement rate-limiting/lockout for failed login attempts
 impl VaultManager {
     pub fn init(auth_path: &Path, vault_path: &Path) -> Result<Self, VaultError> {
         let auth_conn = db::init_auth_db(auth_path)?;
@@ -46,10 +50,20 @@ impl VaultManager {
         Ok(())
     }
 
-    pub fn handle_login(&self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
-        // 1. db query username, fetch auth_hash and salt
-        // 2. crypto pass auth_hash and salt to crypto derive hash from login password + salt and verify
-        //    against auth_hash if it clears derive KEK and Search_key
-        Ok(())
+    pub fn handle_login(&mut self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
+        let (salt, stored_auth_key) = db::get_user_auth_key(&self.auth_db, user)?;
+
+        let keys = crypto::derive_keys(pass, &salt)?;
+
+        if keys.k_auth == stored_auth_key.as_slice() {
+            self.active_keys = Some(keys);
+            Ok(())
+        } else {
+            Err(VaultError::AuthFailure)
+        }
+    }
+    // logout function should ensure that the active_keys are dropped
+    pub fn logout(&mut self) {
+        self.active_keys = None;
     }
 }
