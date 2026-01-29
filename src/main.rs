@@ -4,10 +4,13 @@ mod frontend;
 use std::path::Path;
 
 use backend::VaultError;
+use crossterm::cursor::Show;
 use frontend::ui_temp;
 
 use backend::VaultManager;
 
+use crate::backend::db::VaultEntry;
+// TODO: Move the Inquire loops to frontend/mod.rs
 fn main() -> Result<(), VaultError> {
     let mut manager = VaultManager::init(Path::new("user.db"), Path::new("vault.db"))?;
     println!("Vault Engine: Initialized.");
@@ -25,7 +28,11 @@ fn main() -> Result<(), VaultError> {
             "Login" => {
                 let (user, pass) = ui_temp::prompt_login()?;
                 match manager.handle_login(&user, &pass) {
-                    Ok(_) => println!("Vault Unlocked!"),
+                    Ok(_) => {
+                        println!("Vault Unlocked!");
+
+                        vault_session(&mut manager)?;
+                    }
                     Err(e) => println!("Login Failed: {}", e),
                 }
             }
@@ -34,6 +41,40 @@ fn main() -> Result<(), VaultError> {
                 break;
             }
 
+            _ => println!("Unexpected input received"),
+        }
+    }
+
+    Ok(())
+}
+
+pub fn vault_session(manager: &mut VaultManager) -> Result<(), VaultError> {
+    //let mut manager = VaultManager::init(Path::new("user.db"), Path::new("vault.db"))?;
+    loop {
+        let choice =
+            inquire::Select::new("Vault Control", vec!["Store", "Retrieve", "Logout"]).prompt()?;
+
+        match choice {
+            "Store" => {
+                let (service, user, pass) = ui_temp::prompt_store()?;
+                manager.handle_store(&service, &user, &pass)?;
+                println!("done")
+                // should return a confirmation when insert has been done
+            }
+
+            "Retrieve" => {
+                let (service, user) = ui_temp::prompt_retrieve()?;
+
+                let secret_pass = manager.handle_retrieve(&service, &user)?;
+                let show = manager.format_secret_for_print(secret_pass);
+                println!("{}", show);
+            }
+
+            "Logout" => {
+                manager.logout();
+                println!("keyes dropped");
+                break;
+            }
             _ => println!("Unexpected input received"),
         }
     }

@@ -1,4 +1,4 @@
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use rusqlite::Connection;
 
@@ -18,11 +18,13 @@ pub use error::VaultError;
 
 pub use crypto::VaultKeys;
 
+use crate::backend::crypto::SessionKeys;
+
 pub struct VaultManager {
     auth_db: rusqlite::Connection,
     vault_db: rusqlite::Connection,
-    active_keys: Option<VaultKeys>, // Vaultkeys is a crypto variable containing a list with the
-                                    // KEK and Search_key
+    active_session: Option<SessionKeys>, // Vaultkeys is a crypto variable containing a list with the
+                                         // KEK and Search_key
 }
 // TODO: (v0.5) Implement Argon2 parameter persistence in DB
 // TODO: (v0.5) Sanitize usernames to prevent SQL injection/null-byte attacks
@@ -37,12 +39,16 @@ impl VaultManager {
         Ok(Self {
             auth_db: auth_conn,
             vault_db: vault_conn,
-            active_keys: None,
+            active_session: None,
         })
     }
 
+    pub fn format_secret_for_print(&self, secret: SecretString) -> String {
+        format!("Your password is: {}", secret.expose_secret())
+    }
+
     pub fn handle_register(&self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
-        let salt = crypto::generate_random_salt();
+        let salt = crypto::generate_random_bytes::<12>();
 
         let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
@@ -55,15 +61,41 @@ impl VaultManager {
 
         let keys = crypto::derive_keys(pass, &salt)?;
 
-        if keys.k_auth == stored_auth_key.as_slice() {
-            self.active_keys = Some(keys);
+        if crypto::verify_k_auth(&keys.k_auth, &stored_auth_key) {
+            self.active_session = Some(crypto::SessionKeys::from(keys));
             Ok(())
         } else {
             Err(VaultError::AuthFailure)
         }
     }
+
+    pub fn handle_store(
+        &mut self,
+        service: &str,
+        user: &str,
+        pass: &SecretString,
+    ) -> Result<(), VaultError> {
+        let keys = self
+            .active_session
+            .as_ref()
+            .ok_or(VaultError::AuthFailure)?;
+
+        let dek = crypto::generate_random_bytes::<32>();
+
+        let payload_nonce = crypto::generate_random_bytes::<12>();
+        Ok(())
+    }
+
+    pub fn handle_retrieve(&self, service: &str, user: &str) -> Result<(SecretString), VaultError> {
+        let keys = self
+            .active_session
+            .as_ref()
+            .ok_or(VaultError::AuthFailure)?;
+
+        Ok(SecretString::from("dummy_pass"))
+    }
     // logout function should ensure that the active_keys are dropped
     pub fn logout(&mut self) {
-        self.active_keys = None;
+        self.active_session = None;
     }
 }

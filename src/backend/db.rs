@@ -2,6 +2,15 @@ use std::path::Path;
 
 use crate::backend::VaultError;
 use rusqlite::{Connection, params};
+pub struct VaultEntry {
+    pub id: i32,
+    pub service_name: String, // eveentually search-keyed
+    pub username: String,
+    pub ciphertext: Vec<u8>,
+    pub payload_nonce: [u8; 12],
+    pub wrapped_dek: Vec<u8>, // will require further obfusaction
+    pub dek_nonce: [u8; 12],  // to 'detach' from the password
+}
 
 pub fn init_auth_db(path: &Path) -> Result<Connection, VaultError> {
     let conn = Connection::open(path)?;
@@ -21,13 +30,15 @@ pub fn init_auth_db(path: &Path) -> Result<Connection, VaultError> {
 
 pub fn init_vault_db(path: &Path) -> Result<Connection, VaultError> {
     let conn = Connection::open(path)?;
-
+    // NOTE In future iteration the service_name should be stored as BLOB
     conn.execute(
         "CREATE TABLE IF NOT EXISTS vault (
         id INTEGER PRIMARY KEY,
         service_name TEXT NOT NULL,
-        noce BLOB not NULL,
-        ciphertext BLOB NOT NULL
+        ciphertext BLOB not NULL,
+        payload_nonce BLOB NOT NULL,
+        wrapped_dek BLOB NOT NULL,
+        dek_nonce BLOB NOT NULL
         )",
         (),
     )?;
