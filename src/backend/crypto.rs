@@ -1,6 +1,8 @@
 // Cryptography module KDF derives, encryption and decryption goes here
 
-use std::convert::TryFrom;
+use std::mem::ManuallyDrop;
+
+use std::{convert::TryFrom, os::linux::raw};
 
 use std::pin::Pin;
 
@@ -11,7 +13,7 @@ use subtle::ConstantTimeEq;
 use hkdf::Hkdf;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -32,22 +34,28 @@ use crate::backend::VaultError;
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct VaultKeys {
     pub k_auth: [u8; 32],
-    pub kek: [u8; 32],
-    pub search_key: [u8; 32],
+    pub kek: SecretBox<[u8; 32]>,
+    pub search_key: SecretBox<[u8; 32]>,
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SessionKeys {
-    pub kek: [u8; 32],
-    pub search_key: [u8; 32],
+    pub kek: SecretBox<[u8; 32]>,
+    pub search_key: SecretBox<[u8; 32]>,
 }
 
 //ensures that k_auth is zeroized when its no longer needed
 impl From<VaultKeys> for SessionKeys {
     fn from(vk: VaultKeys) -> Self {
-        Self {
-            kek: vk.kek,
-            search_key: vk.search_key,
+        let vk = ManuallyDrop::new(vk);
+
+        unsafe {
+            let kek = std::ptr::read(&vk.kek);
+            let search_key = std::ptr::read(&vk.search_key);
+            let mut k_auth = std::ptr::read(&vk.k_auth);
+            k_auth.zeroize();
+
+            Self { kek, search_key }
         }
     }
 }
@@ -56,6 +64,12 @@ pub fn generate_random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
     OsRng.fill_bytes(&mut bytes);
     bytes
+}
+
+pub fn generate_secret_dek() -> Result<SecretBox<[u8; 32]>, VaultError> {
+    let secret_dek = SecretBox::new(Box::new(generate_random_bytes::<32>()));
+
+    Ok(secret_dek)
 }
 
 pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultError> {
@@ -75,16 +89,19 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     let hk = Hkdf::<Sha256>::new(None, master_hash.as_ref());
 
     let mut k_auth = [0u8; 32];
-    let mut kek = [0u8; 32];
-    let mut search_key = [0u8; 32];
+    let mut kek_raw = [0u8; 32];
+    let mut search_raw = [0u8; 32];
 
     hk.expand(b"vault auth key", &mut k_auth)
         .map_err(|_| VaultError::CryptoError("HKDF k_auth expansion failed".to_string()))?;
 
-    hk.expand(b"vault encryption key", &mut kek)
+    hk.expand(b"vault encryption key", &mut kek_raw)
         .map_err(|_| VaultError::CryptoError("HKDF kek expansion failed".to_string()))?;
-    hk.expand(b"vault search key", &mut search_key)
+    hk.expand(b"vault search key", &mut search_raw)
         .map_err(|_| VaultError::CryptoError("HKDF search:key expansion failed".to_string()))?;
+
+    let kek = SecretBox::new(Box::new(kek_raw));
+    let search_key = SecretBox::new(Box::new(search_raw));
 
     let keys = VaultKeys {
         k_auth,
@@ -106,9 +123,9 @@ pub fn verify_k_auth(attempted: &[u8], stored: &[u8]) -> bool {
 pub fn encrypt_payload(
     pass: &SecretString,
     nonce_bytes: &[u8; 12],
-    dek: &[u8; 32],
+    dek: &SecretBox<[u8; 32]>,
 ) -> Result<Vec<u8>, VaultError> {
-    let key = Key::<Aes256Gcm>::from_slice(dek);
+    let key = Key::<Aes256Gcm>::from_slice(dek.expose_secret());
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(nonce_bytes);
     let ciphertext = cipher
@@ -120,17 +137,50 @@ pub fn encrypt_payload(
 pub fn decrypt_payload(
     ciphertext: &Vec<u8>,
     nonce_bytes: &[u8; 12],
-    dek: &SecretString,
+    dek: &SecretBox<[u8; 32]>,
 ) -> Result<SecretString, VaultError> {
-    let key = Key::<Aes256Gcm>::from_slice(dek.expose_secret().as_bytes());
+    let key = Key::<Aes256Gcm>::from_slice(dek.expose_secret());
     let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = Aes256Gcm::new(key);
 
     let decrypted_password_bytes = cipher
-        .decrypt(&nonce, ciphertext.as_ref())
+        .decrypt(nonce, ciphertext.as_ref())
         .map_err(|e| VaultError::CryptoError(format!("Decyption failed {}", e)))?;
 
     let decrypted_password_str = String::from_utf8(decrypted_password_bytes)
         .map_err(|_| VaultError::CryptoError("Invalid UTF-8".into()))?;
     Ok(SecretString::from(decrypted_password_str))
+}
+
+pub fn encrypt_dek(
+    secret_dek: &SecretBox<[u8; 32]>,
+    secret_kek: &SecretBox<[u8; 32]>,
+    dek_nonce_bytes: &[u8; 12],
+) -> Result<Vec<u8>, VaultError> {
+    let key = Key::<Aes256Gcm>::from_slice(secret_kek.expose_secret());
+    let nonce = Nonce::from_slice(dek_nonce_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let cipher_dek = cipher
+        .encrypt(nonce, secret_dek.expose_secret().as_ref())
+        .map_err(|e| VaultError::CryptoError(format!("DEK encryption failed: {}", e)))?;
+    Ok(cipher_dek)
+}
+
+pub fn decrypt_dek(
+    cipher_dek: &Vec<u8>,
+    secret_kek: &SecretBox<[u8; 32]>,
+    dek_nonce_bytes: &[u8; 12],
+) -> Result<SecretBox<[u8; 32]>, VaultError> {
+    let key = Key::<Aes256Gcm>::from_slice(secret_kek.expose_secret());
+    let nonce = Nonce::from_slice(dek_nonce_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let raw_dek_vec: Vec<u8> = cipher
+        .decrypt(nonce, cipher_dek.as_ref())
+        .map_err(|e| VaultError::CryptoError(format!("DEK decryption failed: {}", e)))?;
+
+    let dek_array: [u8; 32] = raw_dek_vec
+        .try_into()
+        .map_err(|_| VaultError::CryptoError("Corrupt DEK length".into()))?;
+    let secret_dek = SecretBox::new(Box::new(dek_array));
+    Ok(secret_dek)
 }
