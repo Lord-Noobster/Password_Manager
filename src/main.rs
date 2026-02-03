@@ -22,7 +22,14 @@ fn main() -> Result<(), VaultError> {
         match choice {
             "Register" => {
                 let (user, pass) = ui_temp::prompt_registration()?;
-                manager.handle_register(&user, &pass)?; //passes to the VaultManager in backend/mod.rs
+                match manager.handle_register(&user, &pass) {
+                    Ok(msg) => println!("{}", msg),
+
+                    Err(VaultError::UserExists) => {
+                        println!("Error: User already exists.");
+                    }
+                    Err(e) => return Err(e),
+                }
             }
 
             "Login" => {
@@ -57,8 +64,19 @@ pub fn vault_session(manager: &mut VaultManager) -> Result<(), VaultError> {
         match choice {
             "Store" => {
                 let (service, user, pass) = ui_temp::prompt_store()?;
-                manager.handle_store(&service, &user, &pass)?;
-                println!("done")
+                match manager.handle_store(&service, &user, &pass) {
+                    Ok(msg) => println!("{}", msg),
+
+                    Err(VaultError::EntryAlreadyExists) => {
+                        println!(
+                            "Error: an entry for '{}' already exists for user '{}'.",
+                            service, user
+                        );
+                        println!("Suggestion: Use a unique service name or a different username.");
+                    }
+
+                    Err(e) => return Err(e),
+                }
                 // should return a confirmation when insert has been done
             }
 

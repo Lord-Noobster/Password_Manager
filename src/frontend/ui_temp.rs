@@ -1,6 +1,6 @@
 //this is a temp ui file so that i can interact with the backend
 
-use inquire::{Password, Text};
+use inquire::{Password, Text, validator::Validation};
 
 use secrecy::{ExposeSecret, SecretString};
 
@@ -28,7 +28,15 @@ pub fn prompt_login() -> Result<(String, SecretString), VaultError> {
 }
 
 pub fn prompt_store() -> Result<(String, String, SecretString), VaultError> {
-    let service_name = Text::new("Service:").prompt()?;
+    let service_name = Text::new("Service:")
+        .with_validator(|input: &str| {
+            if input.trim().is_empty() {
+                Ok(Validation::Invalid("Field cannot be blank".into()))
+            } else {
+                Ok(Validation::Valid)
+            }
+        })
+        .prompt()?;
 
     let username = Text::new("Username or Email:").prompt()?;
 

@@ -49,13 +49,20 @@ impl VaultManager {
         // there
     }
 
-    pub fn handle_register(&self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
+    pub fn handle_register(&self, user: &str, pass: &SecretString) -> Result<String, VaultError> {
         let salt = crypto::generate_random_bytes::<12>();
 
         let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
-        db::save_new_user(&self.auth_db, user, &salt, &keys.k_auth)?;
-        Ok(())
+        let save_user = db::save_new_user(&self.auth_db, user, &salt, &keys.k_auth);
+
+        if let Err(e) = save_user {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                return Err(VaultError::UserExists);
+            }
+            return Err(e);
+        }
+        Ok("Registration complete please login to start using the vault.".to_string())
     }
 
     pub fn handle_login(&mut self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
@@ -76,7 +83,7 @@ impl VaultManager {
         service_name: &str,
         user: &str,
         pass: &SecretString,
-    ) -> Result<(), VaultError> {
+    ) -> Result<String, VaultError> {
         let keys = self
             .active_session
             .as_ref()
@@ -91,7 +98,7 @@ impl VaultManager {
 
         let wrapped_dek = crypto::encrypt_dek(&secret_dek, &keys.kek, &dek_nonce_bytes)?;
 
-        db::store_secret(
+        let save_secret = db::store_secret(
             &self.vault_db,
             service_name,
             user,
@@ -99,8 +106,19 @@ impl VaultManager {
             &payload_nonce,
             wrapped_dek,
             &dek_nonce_bytes,
-        )?;
-        Ok(())
+        );
+
+        if let Err(e) = save_secret {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                return Err(VaultError::EntryAlreadyExists);
+            }
+            return Err(e);
+        }
+
+        Ok(format!(
+            "Successfully entered credentials for {}",
+            service_name
+        ))
     }
 
     pub fn handle_retrieve(

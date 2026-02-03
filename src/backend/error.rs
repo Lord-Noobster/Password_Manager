@@ -21,8 +21,11 @@ pub enum VaultError {
     #[error("Data corruption detected: {0}")]
     IntegrityError(String),
 
-    #[error("User already exists: {0}")]
-    UserExists(String),
+    #[error("User already exists")]
+    UserExists,
+
+    #[error("An entry for this service and username already exists")]
+    EntryAlreadyExists,
 
     #[error("User not found: {0}")]
     UserNotFound(String),

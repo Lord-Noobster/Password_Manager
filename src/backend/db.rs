@@ -52,7 +52,8 @@ pub fn init_vault_db(path: &Path) -> Result<Connection, VaultError> {
         ciphertext BLOB not NULL,
         payload_nonce BLOB NOT NULL,
         wrapped_dek BLOB NOT NULL,
-        dek_nonce BLOB NOT NULL
+        dek_nonce BLOB NOT NULL,
+        UNIQUE(service_name, username)
         )",
         (),
     )?;
