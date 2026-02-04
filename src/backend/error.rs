@@ -30,6 +30,9 @@ pub enum VaultError {
     #[error("User not found: {0}")]
     UserNotFound(String),
 
+    #[error("Password not found")]
+    EntryNotFound,
+
     #[error("Input error: {0}")]
     UiError(#[from] inquire::InquireError),
 }

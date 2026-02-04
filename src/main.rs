@@ -8,6 +8,7 @@ use crossterm::cursor::Show;
 use frontend::ui_temp;
 
 use backend::VaultManager;
+use secrecy::ExposeSecret;
 
 use crate::backend::db::VaultEntry;
 // TODO: Move the Inquire loops to frontend/mod.rs
@@ -83,9 +84,18 @@ pub fn vault_session(manager: &mut VaultManager) -> Result<(), VaultError> {
             "Retrieve" => {
                 let (service, user) = ui_temp::prompt_retrieve()?;
 
-                let secret_pass = manager.handle_retrieve(&service, &user)?;
-                let show = manager.format_secret_for_print(secret_pass);
-                println!("{}", show);
+                match manager.handle_retrieve(&service, &user) {
+                    Ok(pass) => {
+                        println!("The password for {} is {}", service, pass.expose_secret());
+                    }
+                    Err(VaultError::EntryNotFound) => {
+                        println!("Error: Service or username not recognised");
+                    }
+                    Err(e) => return Err(e),
+                }
+                //let secret_pass = manager.handle_retrieve(&service, &user)?;
+                //let show = manager.format_secret_for_print(secret_pass);
+                //println!("{}", show);
             }
 
             "Logout" => {

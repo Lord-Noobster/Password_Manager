@@ -19,6 +19,7 @@ pub use error::VaultError;
 pub use crypto::VaultKeys;
 
 use crate::backend::crypto::SessionKeys;
+use crate::backend::db::VaultEntry;
 
 pub struct VaultManager {
     auth_db: rusqlite::Connection,
@@ -68,9 +69,13 @@ impl VaultManager {
     pub fn handle_login(&mut self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
         let (salt, stored_auth_key) = db::get_user_auth_key(&self.auth_db, user)?;
 
-        let keys = crypto::derive_keys(pass, &salt)?;
+        let mut keys = crypto::derive_keys(pass, &salt)?;
 
         if crypto::verify_k_auth(&keys.k_auth, &stored_auth_key) {
+            let owner_hash = crypto::obfuscate_data(&keys.search_key, user, "owner");
+
+            keys.owner_id = Some(SecretString::from(owner_hash));
+
             self.active_session = Some(crypto::SessionKeys::from(keys));
             Ok(())
         } else {
@@ -88,6 +93,13 @@ impl VaultManager {
             .active_session
             .as_ref()
             .ok_or(VaultError::AuthFailure)?;
+
+        let owner_id = keys.owner_id.expose_secret();
+
+        let service_name_hash = crypto::obfuscate_data(&keys.search_key, service_name, "service");
+
+        let username_hash = crypto::obfuscate_data(&keys.search_key, user, "account");
+
         let secret_dek = crypto::generate_secret_dek()?;
 
         let payload_nonce = crypto::generate_random_bytes::<12>();
@@ -98,17 +110,18 @@ impl VaultManager {
 
         let wrapped_dek = crypto::encrypt_dek(&secret_dek, &keys.kek, &dek_nonce_bytes)?;
 
-        let save_secret = db::store_secret(
-            &self.vault_db,
-            service_name,
-            user,
-            encrypted_payload,
-            &payload_nonce,
+        let entry = VaultEntry {
+            id: None,
+            owner_id: owner_id.to_string(),
+            service_name: service_name_hash,
+            username: username_hash,
+            ciphertext: encrypted_payload,
+            payload_nonce,
             wrapped_dek,
-            &dek_nonce_bytes,
-        );
+            dek_nonce: dek_nonce_bytes,
+        };
 
-        if let Err(e) = save_secret {
+        if let Err(e) = db::store_secret(&self.vault_db, entry) {
             if e.to_string().contains("UNIQUE constraint failed") {
                 return Err(VaultError::EntryAlreadyExists);
             }
@@ -130,7 +143,15 @@ impl VaultManager {
             .active_session
             .as_ref()
             .ok_or(VaultError::AuthFailure)?;
-        let entry = db::get_secret(&self.vault_db, service_name, username)?;
+        let owner_id_hash = keys.owner_id.expose_secret();
+        let service_name_hash = crypto::obfuscate_data(&keys.search_key, service_name, "service");
+        let username_hash = crypto::obfuscate_data(&keys.search_key, username, "account");
+        let entry = db::get_secret(
+            &self.vault_db,
+            owner_id_hash,
+            &service_name_hash,
+            &username_hash,
+        )?;
         let secret_dek = crypto::decrypt_dek(&entry.wrapped_dek, &keys.kek, &entry.dek_nonce)?;
         let secret_password =
             crypto::decrypt_payload(&entry.ciphertext, &entry.payload_nonce, &secret_dek)?;

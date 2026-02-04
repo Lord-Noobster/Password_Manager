@@ -5,7 +5,8 @@ use rusqlite::{Connection, params};
 use serde::de;
 
 pub struct VaultEntry {
-    pub id: i32,
+    pub id: Option<i32>,
+    pub owner_id: String,
     pub service_name: String, // eveentually search-keyed
     pub username: String,
     pub ciphertext: Vec<u8>,
@@ -47,13 +48,14 @@ pub fn init_vault_db(path: &Path) -> Result<Connection, VaultError> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS vault (
         id INTEGER PRIMARY KEY,
+        owner_id TEXT NOT NULL,
         service_name TEXT NOT NULL,
         username TEXT NOT NULL,
         ciphertext BLOB not NULL,
         payload_nonce BLOB NOT NULL,
         wrapped_dek BLOB NOT NULL,
         dek_nonce BLOB NOT NULL,
-        UNIQUE(service_name, username)
+        UNIQUE(owner_id, service_name, username)
         )",
         (),
     )?;
@@ -90,17 +92,11 @@ pub fn get_user_auth_key(
 }
 
 pub fn store_secret(
-    conn: &Connection,
-    service_name: &str,
-    username: &str,
-    ciphertext: Vec<u8>,
-    payload_nonce: &[u8; 12],
-    wrapped_dek: Vec<u8>,
-    dek_nonce: &[u8; 12],
+    conn: &Connection, entry: VaultEntry
 ) -> Result<(), VaultError> {
     conn.execute(
-        "INSERT INTO vault (service_name, username, ciphertext, payload_nonce, wrapped_dek, dek_nonce) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        (service_name, username, ciphertext, payload_nonce, wrapped_dek, dek_nonce),
+        "INSERT INTO vault (owner_id, service_name, username, ciphertext, payload_nonce, wrapped_dek, dek_nonce) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (entry.owner_id, entry.service_name, entry.username, entry.ciphertext, entry.payload_nonce, entry.wrapped_dek, entry.dek_nonce),
     )?;
 
     Ok(())
@@ -108,19 +104,21 @@ pub fn store_secret(
 
 pub fn get_secret(
     conn: &Connection,
-    service_name: &str,
-    username: &str,
+    owner_id_hash: &str,
+    service_name_hash: &str,
+    username_hash: &str,
 ) -> Result<VaultEntry, VaultError> {
-    let result = conn.query_row("SELECT id, service_name, username, ciphertext, payload_nonce, wrapped_dek, dek_nonce FROM vault WHERE service_name = ?1 AND username = ?2",
-        [service_name, username], |row|{ 
+    let result = conn.query_row("SELECT id, owner_id, service_name, username, ciphertext, payload_nonce, wrapped_dek, dek_nonce FROM vault WHERE owner_id = ?1 AND service_name = ?2 AND username = ?3",
+        [owner_id_hash, service_name_hash, username_hash], |row|{ 
             Ok(VaultEntry {
                 id: row.get(0)?,
-                service_name: row.get(1)?,
-                username: row.get(2)?,
-                ciphertext: row.get(3)?,
-                payload_nonce: blob_to_nonce(row, 4)?, // nonce stored as Vec<u8> fn to [u8; 12]
-                wrapped_dek: row.get(5)?,
-                dek_nonce: blob_to_nonce(row, 6)?,
+                owner_id: row.get(1)?,
+                service_name: row.get(2)?,
+                username: row.get(3)?,
+                ciphertext: row.get(4)?,
+                payload_nonce: blob_to_nonce(row, 5)?, // nonce stored as Vec<u8> fn to [u8; 12]
+                wrapped_dek: row.get(6)?,
+                dek_nonce: blob_to_nonce(row, 7)?,
             })
         }
     );

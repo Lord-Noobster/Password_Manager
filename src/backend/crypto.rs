@@ -6,6 +6,10 @@ use std::{convert::TryFrom, os::linux::raw};
 
 use std::pin::Pin;
 
+use digest::KeyInit;
+use hmac::{Hmac, Mac};
+type HmacSha256 = Hmac<Sha256>;
+
 use sha2::Sha256;
 
 use subtle::ConstantTimeEq;
@@ -15,10 +19,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 
-use aes_gcm::{
-    Aes256Gcm, Key, Nonce,
-    aead::{Aead, KeyInit},
-};
+use aes_gcm::{Aes256Gcm, Key, Nonce, aead::Aead};
 
 use argon2::{
     Argon2,
@@ -36,12 +37,14 @@ pub struct VaultKeys {
     pub k_auth: [u8; 32],
     pub kek: SecretBox<[u8; 32]>,
     pub search_key: SecretBox<[u8; 32]>,
+    pub owner_id: Option<SecretString>,
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SessionKeys {
     pub kek: SecretBox<[u8; 32]>,
     pub search_key: SecretBox<[u8; 32]>,
+    pub owner_id: SecretString,
 }
 
 //ensures that k_auth is zeroized when its no longer needed
@@ -52,10 +55,16 @@ impl From<VaultKeys> for SessionKeys {
         unsafe {
             let kek = std::ptr::read(&vk.kek);
             let search_key = std::ptr::read(&vk.search_key);
+            let owner_id = std::ptr::read(&vk.owner_id)
+                .expect("owner:id must be populated before session conversion");
             let mut k_auth = std::ptr::read(&vk.k_auth);
             k_auth.zeroize();
 
-            Self { kek, search_key }
+            Self {
+                kek,
+                search_key,
+                owner_id,
+            }
         }
     }
 }
@@ -64,6 +73,16 @@ pub fn generate_random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
     OsRng.fill_bytes(&mut bytes);
     bytes
+}
+
+pub fn obfuscate_data(search_key: &SecretBox<[u8; 32]>, data: &str, domain_tag: &str) -> String {
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(search_key.expose_secret())
+        .expect("HMAC-SHA256 accepts 32-byte keys");
+
+    mac.update(domain_tag.as_bytes());
+    mac.update(data.as_bytes());
+
+    format!("{:x}", mac.finalize().into_bytes())
 }
 
 pub fn generate_secret_dek() -> Result<SecretBox<[u8; 32]>, VaultError> {
@@ -107,6 +126,7 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
         k_auth,
         kek,
         search_key,
+        owner_id: None,
     };
 
     Ok(keys)
