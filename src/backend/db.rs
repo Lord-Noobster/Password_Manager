@@ -56,8 +56,7 @@ pub fn init_vault_db(path: &Path) -> Result<Connection, VaultError> {
         wrapped_dek BLOB NOT NULL,
         dek_nonce BLOB NOT NULL,
         UNIQUE(owner_id, service_name, username)
-        )",
-        (),
+        )",        (),
     )?;
     Ok(conn)
 }

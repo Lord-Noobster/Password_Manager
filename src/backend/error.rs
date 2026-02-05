@@ -27,6 +27,9 @@ pub enum VaultError {
     #[error("An entry for this service and username already exists")]
     EntryAlreadyExists,
 
+    #[error("Invalid Input. {0}")]
+    InvalidInput(String),
+
     #[error("User not found: {0}")]
     UserNotFound(String),
 

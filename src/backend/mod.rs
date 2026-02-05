@@ -53,9 +53,36 @@ impl VaultManager {
     pub fn handle_register(&self, user: &str, pass: &SecretString) -> Result<String, VaultError> {
         let salt = crypto::generate_random_bytes::<12>();
 
+        let p_len = pass.expose_secret().len();
+
+        if pass.expose_secret().trim().is_empty() {
+            return Err(VaultError::InvalidInput(
+                "Blank passwords are not allowed".into(),
+            ));
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            if p_len < 2 {
+                return Err(VaultError::InvalidInput(
+                    "Test password should still be over 2 char idiot".into(),
+                ));
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            if p_len < 12 {
+                return Err(VaultError::InvalidInput(
+                    "password must be 12 char or more".into(),
+                ));
+            }
+        }
+
         let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
-        let save_user = db::save_new_user(&self.auth_db, user, &salt, &keys.k_auth);
+        let save_user =
+            db::save_new_user(&self.auth_db, user, &salt, keys.k_storage.expose_secret());
 
         if let Err(e) = save_user {
             if e.to_string().contains("UNIQUE constraint failed") {
@@ -71,16 +98,20 @@ impl VaultManager {
 
         let mut keys = crypto::derive_keys(pass, &salt)?;
 
-        if crypto::verify_k_auth(&keys.k_auth, &stored_auth_key) {
-            let owner_hash = crypto::obfuscate_data(&keys.search_key, user, "owner");
-
-            keys.owner_id = Some(SecretString::from(owner_hash));
-
-            self.active_session = Some(crypto::SessionKeys::from(keys));
-            Ok(())
-        } else {
-            Err(VaultError::AuthFailure)
+        if !crypto::verify_k_storage(keys.k_storage.expose_secret(), &stored_auth_key) {
+            return Err(VaultError::AuthFailure);
         }
+
+        if !crypto::verify_internal_handshake(&keys.k_auth, &salt, user) {
+            return Err(VaultError::AuthFailure);
+        }
+
+        let owner_hash = crypto::obfuscate_data(&keys.search_key, user, "owner");
+
+        keys.owner_id = Some(SecretString::from(owner_hash));
+
+        self.active_session = Some(crypto::SessionKeys::from(keys));
+        Ok(())
     }
 
     pub fn handle_store(

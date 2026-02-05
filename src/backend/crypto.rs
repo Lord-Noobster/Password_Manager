@@ -34,7 +34,8 @@ use crate::backend::VaultError;
 //should ensure that when the variables fall out of scope they will be zeroize in memory
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct VaultKeys {
-    pub k_auth: [u8; 32],
+    pub k_storage: SecretBox<[u8; 32]>,
+    pub k_auth: SecretBox<[u8; 32]>,
     pub kek: SecretBox<[u8; 32]>,
     pub search_key: SecretBox<[u8; 32]>,
     pub owner_id: Option<SecretString>,
@@ -59,6 +60,8 @@ impl From<VaultKeys> for SessionKeys {
                 .expect("owner:id must be populated before session conversion");
             let mut k_auth = std::ptr::read(&vk.k_auth);
             k_auth.zeroize();
+            let mut k_storage = std::ptr::read(&vk.k_storage);
+            k_storage.zeroize();
 
             Self {
                 kek,
@@ -107,11 +110,15 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
 
     let hk = Hkdf::<Sha256>::new(None, master_hash.as_ref());
 
-    let mut k_auth = [0u8; 32];
+    let mut k_storage_raw = [0u8; 32];
+    let mut k_auth_raw = [0u8; 32];
     let mut kek_raw = [0u8; 32];
     let mut search_raw = [0u8; 32];
 
-    hk.expand(b"vault auth key", &mut k_auth)
+    hk.expand(b"storage_verifier", &mut k_storage_raw)
+        .map_err(|_| VaultError::CryptoError("HKDF k_storage expansion failed".to_string()))?;
+
+    hk.expand(b"vault auth key", &mut k_auth_raw)
         .map_err(|_| VaultError::CryptoError("HKDF k_auth expansion failed".to_string()))?;
 
     hk.expand(b"vault encryption key", &mut kek_raw)
@@ -119,10 +126,13 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     hk.expand(b"vault search key", &mut search_raw)
         .map_err(|_| VaultError::CryptoError("HKDF search:key expansion failed".to_string()))?;
 
+    let k_storage = SecretBox::new(Box::new(k_storage_raw));
+    let k_auth = SecretBox::new(Box::new(k_auth_raw));
     let kek = SecretBox::new(Box::new(kek_raw));
     let search_key = SecretBox::new(Box::new(search_raw));
 
     let keys = VaultKeys {
+        k_storage,
         k_auth,
         kek,
         search_key,
@@ -132,12 +142,32 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     Ok(keys)
 }
 
-pub fn verify_k_auth(attempted: &[u8], stored: &[u8]) -> bool {
+pub fn verify_k_storage(attempted: &[u8], stored: &[u8]) -> bool {
     if attempted.len() != stored.len() {
+        //still run the check on it self to keep constant time even on a fail
+        attempted.ct_eq(attempted);
         return false;
     }
 
     attempted.ct_eq(stored).into()
+}
+
+pub fn verify_internal_handshake(
+    k_auth: &SecretBox<[u8; 32]>,
+    salt: &[u8],
+    username: &str,
+) -> bool {
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(k_auth.expose_secret())
+        .expect("HMAC-SHA256 accepts 32-byte keys");
+
+    mac.update(salt);
+    mac.update(username.as_bytes());
+
+    mac.update(b"internal_handshake_v1");
+
+    let result = mac.finalize().into_bytes();
+
+    !result.iter().all(|&x| x == 0)
 }
 
 pub fn encrypt_payload(
