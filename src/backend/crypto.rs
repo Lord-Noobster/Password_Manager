@@ -57,7 +57,7 @@ impl From<VaultKeys> for SessionKeys {
             let kek = std::ptr::read(&vk.kek);
             let search_key = std::ptr::read(&vk.search_key);
             let owner_id = std::ptr::read(&vk.owner_id)
-                .expect("owner:id must be populated before session conversion");
+                .expect("owner_id must be populated before session conversion");
             let mut k_auth = std::ptr::read(&vk.k_auth);
             k_auth.zeroize();
             let mut k_storage = std::ptr::read(&vk.k_storage);
