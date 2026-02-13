@@ -81,8 +81,15 @@ impl VaultManager {
 
         let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
-        let save_user =
-            db::save_new_user(&self.auth_db, user, &salt, keys.k_storage.expose_secret());
+        let save_user = db::save_new_user(
+            &self.auth_db,
+            user,
+            &salt,
+            keys.k_storage
+                .as_ref()
+                .expect("Storage key missing")
+                .expose_secret(),
+        );
 
         if let Err(e) = save_user {
             if e.to_string().contains("UNIQUE constraint failed") {
@@ -98,15 +105,29 @@ impl VaultManager {
 
         let mut keys = crypto::derive_keys(pass, &salt)?;
 
-        if !crypto::verify_k_storage(keys.k_storage.expose_secret(), &stored_auth_key) {
+        if !crypto::verify_k_storage(
+            keys.k_storage
+                .as_ref()
+                .expect("Storage key missing")
+                .expose_secret(),
+            &stored_auth_key,
+        ) {
             return Err(VaultError::AuthFailure);
         }
 
-        if !crypto::verify_internal_handshake(&keys.k_auth, &salt, user) {
+        if !crypto::verify_internal_handshake(
+            keys.k_auth.as_ref().expect("auth key missing"),
+            &salt,
+            user,
+        ) {
             return Err(VaultError::AuthFailure);
         }
 
-        let owner_hash = crypto::obfuscate_data(&keys.search_key, user, "owner");
+        let owner_hash = crypto::obfuscate_data(
+            keys.search_key.as_ref().expect("Search key missing"),
+            user,
+            "owner",
+        );
 
         keys.owner_id = Some(SecretString::from(owner_hash));
 

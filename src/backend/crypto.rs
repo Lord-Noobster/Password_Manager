@@ -34,10 +34,10 @@ use crate::backend::VaultError;
 //should ensure that when the variables fall out of scope they will be zeroize in memory
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct VaultKeys {
-    pub k_storage: SecretBox<[u8; 32]>,
-    pub k_auth: SecretBox<[u8; 32]>,
-    pub kek: SecretBox<[u8; 32]>,
-    pub search_key: SecretBox<[u8; 32]>,
+    pub k_storage: Option<SecretBox<[u8; 32]>>,
+    pub k_auth: Option<SecretBox<[u8; 32]>>,
+    pub kek: Option<SecretBox<[u8; 32]>>,
+    pub search_key: Option<SecretBox<[u8; 32]>>,
     pub owner_id: Option<SecretString>,
 }
 
@@ -50,24 +50,21 @@ pub struct SessionKeys {
 
 //ensures that k_auth is zeroized when its no longer needed
 impl From<VaultKeys> for SessionKeys {
-    fn from(vk: VaultKeys) -> Self {
-        let vk = ManuallyDrop::new(vk);
+    fn from(mut vk: VaultKeys) -> Self {
+        if let Some(mut k) = vk.k_storage.take() {
+            k.zeroize();
+        }
+        if let Some(mut k) = vk.k_auth.take() {
+            k.zeroize();
+        }
 
-        unsafe {
-            let kek = std::ptr::read(&vk.kek);
-            let search_key = std::ptr::read(&vk.search_key);
-            let owner_id = std::ptr::read(&vk.owner_id)
-                .expect("owner_id must be populated before session conversion");
-            let mut k_auth = std::ptr::read(&vk.k_auth);
-            k_auth.zeroize();
-            let mut k_storage = std::ptr::read(&vk.k_storage);
-            k_storage.zeroize();
-
-            Self {
-                kek,
-                search_key,
-                owner_id,
-            }
+        let kek = vk.kek.take().expect("KEK missing");
+        let search_key = vk.search_key.take().expect("Search key missing");
+        let owner_id = vk.owner_id.take().expect("Owner ID missing");
+        Self {
+            kek,
+            search_key,
+            owner_id,
         }
     }
 }
@@ -132,10 +129,10 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     let search_key = SecretBox::new(Box::new(search_raw));
 
     let keys = VaultKeys {
-        k_storage,
-        k_auth,
-        kek,
-        search_key,
+        k_storage: Some(k_storage),
+        k_auth: Some(k_auth),
+        kek: Some(kek),
+        search_key: Some(search_key),
         owner_id: None,
     };
 
