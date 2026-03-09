@@ -21,6 +21,8 @@ pub use crypto::VaultKeys;
 use crate::backend::crypto::SessionKeys;
 use crate::backend::db::VaultEntry;
 
+// IM ADDING COMMENTS GUESSING WHERE I PROBABLY LEAVE SENSITIVE DATA IN RAM TO SEE HOW MUCH I CAN
+// POTENTIALLY CATCH BY JUST READING THROUGH BEFORE RUNNING
 pub struct VaultManager {
     auth_db: rusqlite::Connection,
     vault_db: rusqlite::Connection,
@@ -70,7 +72,7 @@ impl VaultManager {
             }
         }
 
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(debug_assertions))] // should add in requirement for symbols and numbers
         {
             if p_len < 12 {
                 return Err(VaultError::InvalidInput(
@@ -146,7 +148,7 @@ impl VaultManager {
             .as_ref()
             .ok_or(VaultError::AuthFailure)?;
 
-        let owner_id = keys.owner_id.expose_secret();
+        let owner_id = keys.owner_id.expose_secret(); // can i wait and expose it later?
 
         let service_name_hash = crypto::obfuscate_data(&keys.search_key, service_name, "service");
 
@@ -179,7 +181,7 @@ impl VaultManager {
             }
             return Err(e);
         }
-
+        // should probably zeroize here
         Ok(format!(
             "Successfully entered credentials for {}",
             service_name

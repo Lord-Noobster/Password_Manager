@@ -1,10 +1,8 @@
 // Cryptography module KDF derives, encryption and decryption goes here
 
-use std::mem::ManuallyDrop;
+use std::{convert::TryFrom, os::linux::raw}; // Depreciated
 
-use std::{convert::TryFrom, os::linux::raw};
-
-use std::pin::Pin;
+use std::pin::Pin; // pin variables to memory adresses
 
 use digest::KeyInit;
 use hmac::{Hmac, Mac};
@@ -50,6 +48,7 @@ pub struct SessionKeys {
 
 //ensures that k_auth is zeroized when its no longer needed
 impl From<VaultKeys> for SessionKeys {
+    #[inline(never)]
     fn from(mut vk: VaultKeys) -> Self {
         if let Some(mut k) = vk.k_storage.take() {
             k.zeroize();
@@ -92,11 +91,12 @@ pub fn generate_secret_dek() -> Result<SecretBox<[u8; 32]>, VaultError> {
 }
 
 pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultError> {
-    let password_bytes = pass.expose_secret().as_bytes(); // the pass is now exposed
+    let password_bytes = pass.expose_secret().as_bytes(); // the pass is now exposed Remember to
+    // Zero when its dropped
 
     let salt = SaltString::encode_b64(salt)
         .map_err(|e: argon2::password_hash::Error| VaultError::Argon2Error(e.to_string()))?;
-    // Argon2 flow
+
     let argon2 = Argon2::default();
 
     let hash = argon2
@@ -112,6 +112,8 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     let mut kek_raw = [0u8; 32];
     let mut search_raw = [0u8; 32];
 
+    // Generate independent sub keys to ensure that if one is compromised it wont affect the
+    // others.
     hk.expand(b"storage_verifier", &mut k_storage_raw)
         .map_err(|_| VaultError::CryptoError("HKDF k_storage expansion failed".to_string()))?;
 
@@ -230,4 +232,31 @@ pub fn decrypt_dek(
         .map_err(|_| VaultError::CryptoError("Corrupt DEK length".into()))?;
     let secret_dek = SecretBox::new(Box::new(dek_array));
     Ok(secret_dek)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::SecretBox;
+
+    #[test]
+    fn test_keys_lifecycle_and_zeroize() {
+        // 1. Create VaultKeys simulating a login
+        let vk = VaultKeys {
+            k_storage: Some(SecretBox::new(Box::new([1u8; 32]))),
+            k_auth: Some(SecretBox::new(Box::new([2u8; 32]))),
+            kek: Some(SecretBox::new(Box::new([3u8; 32]))),
+            search_key: Some(SecretBox::new(Box::new([4u8; 32]))),
+            owner_id: Some(secrecy::SecretString::new("owner".into())),
+        };
+
+        // 2. Transition to SessionKeys
+        let sk = SessionKeys::from(vk);
+
+        // 3. Verify logic: sk should have the keys, vk is dropped
+        assert_eq!(sk.owner_id.expose_secret(), "owner");
+
+        // 4. Explicitly drop the session
+        drop(sk);
+    }
 }

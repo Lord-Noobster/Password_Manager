@@ -52,6 +52,8 @@ fn main() -> Result<(), VaultError> {
             _ => println!("Unexpected input received"),
         }
     }
+    manager.logout();
+    drop(manager); // should force the drop of the entire manager in mod.rs 
 
     Ok(())
 }
