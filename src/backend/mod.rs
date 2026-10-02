@@ -83,42 +83,37 @@ impl VaultManager {
 
         let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
-        let save_user = db::save_new_user(
-            &self.auth_db,
-            user,
-            &salt,
-            keys.k_storage
-                .as_ref()
-                .expect("Storage key missing")
-                .expose_secret(),
-        );
+        //HMAC Challenge!
+        let k_auth = keys.k_auth.as_ref().expect("Auth Key missing");
+        let verification_tag = crypto::generate_registration_tag(k_auth, &salt, user);
+
+        let save_user = db::save_new_user(&self.auth_db, user, &salt, &verification_tag);
 
         if let Err(e) = save_user {
             if e.to_string().contains("UNIQUE constraint failed") {
                 return Err(VaultError::UserExists);
             }
             return Err(e);
-        }
+        } // technically a security flaw would let a malicious actor iter over username to see who
+        // has an account the error should be more vague
         Ok("Registration complete please login to start using the vault.".to_string())
     }
 
     pub fn handle_login(&mut self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
-        let (salt, stored_auth_key) = db::get_user_auth_key(&self.auth_db, user)?;
+        let (salt, stored_verification_tag) = db::get_user_auth_key(&self.auth_db, user)?;
 
         let mut keys = crypto::derive_keys(pass, &salt)?;
 
-        if !crypto::verify_k_storage(
-            keys.k_storage
-                .as_ref()
-                .expect("Storage key missing")
-                .expose_secret(),
-            &stored_auth_key,
-        ) {
-            return Err(VaultError::AuthFailure);
-        }
+        let session_challenge = crypto::generate_random_bytes::<32>();
+        let k_auth = keys.k_auth.as_ref().expect("Auth key missing");
 
-        if !crypto::verify_internal_handshake(
-            keys.k_auth.as_ref().expect("auth key missing"),
+        let client_response = crypto::calculate_challenge_response(k_auth, &session_challenge);
+
+        if !crypto::verify_hmac_challenge(
+            k_auth,
+            &session_challenge,
+            &client_response,
+            &stored_verification_tag,
             &salt,
             user,
         ) {

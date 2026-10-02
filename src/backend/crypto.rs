@@ -6,6 +6,7 @@ use std::pin::Pin; // pin variables to memory adresses
 
 use digest::KeyInit;
 use hmac::{Hmac, Mac};
+
 type HmacSha256 = Hmac<Sha256>;
 
 use sha2::Sha256;
@@ -32,7 +33,6 @@ use crate::backend::VaultError;
 //should ensure that when the variables fall out of scope they will be zeroize in memory
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct VaultKeys {
-    pub k_storage: Option<SecretBox<[u8; 32]>>,
     pub k_auth: Option<SecretBox<[u8; 32]>>,
     pub kek: Option<SecretBox<[u8; 32]>>,
     pub search_key: Option<SecretBox<[u8; 32]>>,
@@ -50,9 +50,6 @@ pub struct SessionKeys {
 impl From<VaultKeys> for SessionKeys {
     #[inline(never)]
     fn from(mut vk: VaultKeys) -> Self {
-        if let Some(mut k) = vk.k_storage.take() {
-            k.zeroize();
-        }
         if let Some(mut k) = vk.k_auth.take() {
             k.zeroize();
         }
@@ -107,16 +104,12 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
 
     let hk = Hkdf::<Sha256>::new(None, master_hash.as_ref());
 
-    let mut k_storage_raw = [0u8; 32];
     let mut k_auth_raw = [0u8; 32];
     let mut kek_raw = [0u8; 32];
     let mut search_raw = [0u8; 32];
 
     // Generate independent sub keys to ensure that if one is compromised it wont affect the
     // others.
-    hk.expand(b"storage_verifier", &mut k_storage_raw)
-        .map_err(|_| VaultError::CryptoError("HKDF k_storage expansion failed".to_string()))?;
-
     hk.expand(b"vault auth key", &mut k_auth_raw)
         .map_err(|_| VaultError::CryptoError("HKDF k_auth expansion failed".to_string()))?;
 
@@ -125,13 +118,11 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     hk.expand(b"vault search key", &mut search_raw)
         .map_err(|_| VaultError::CryptoError("HKDF search:key expansion failed".to_string()))?;
 
-    let k_storage = SecretBox::new(Box::new(k_storage_raw));
     let k_auth = SecretBox::new(Box::new(k_auth_raw));
     let kek = SecretBox::new(Box::new(kek_raw));
     let search_key = SecretBox::new(Box::new(search_raw));
 
     let keys = VaultKeys {
-        k_storage: Some(k_storage),
         k_auth: Some(k_auth),
         kek: Some(kek),
         search_key: Some(search_key),
@@ -141,32 +132,49 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     Ok(keys)
 }
 
-pub fn verify_k_storage(attempted: &[u8], stored: &[u8]) -> bool {
-    if attempted.len() != stored.len() {
-        //still run the check on it self to keep constant time even on a fail
-        attempted.ct_eq(attempted);
-        return false;
-    }
-
-    attempted.ct_eq(stored).into()
-}
-
-pub fn verify_internal_handshake(
+pub fn generate_registration_tag(
     k_auth: &SecretBox<[u8; 32]>,
     salt: &[u8],
     username: &str,
-) -> bool {
-    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(k_auth.expose_secret())
-        .expect("HMAC-SHA256 accepts 32-byte keys");
-
+) -> [u8; 32] {
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(k_auth.expose_secret()).unwrap();
     mac.update(salt);
     mac.update(username.as_bytes());
+    mac.update(b"registration_handshake_temp");
 
-    mac.update(b"internal_handshake_v1");
+    let mut tag = [0u8; 32];
+    tag.copy_from_slice(mac.finalize().into_bytes().as_slice());
+    tag
+}
 
-    let result = mac.finalize().into_bytes();
+pub fn calculate_challenge_response(
+    k_auth: &SecretBox<[u8; 32]>,
+    challenge: &[u8; 32],
+) -> [u8; 32] {
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(k_auth.expose_secret()).unwrap();
+    mac.update(challenge);
+    mac.update(b"login_challenge_temp");
 
-    !result.iter().all(|&x| x == 0)
+    let mut response = [0u8; 32];
+    response.copy_from_slice(mac.finalize().into_bytes().as_slice());
+    response
+}
+
+pub fn verify_hmac_challenge(
+    k_auth: &SecretBox<[u8; 32]>,
+    challenge: &[u8; 32],
+    client_response: &[u8; 32],
+    stored_verification_tag: &[u8; 32],
+    salt: &[u8],
+    username: &str,
+) -> bool {
+    let current_reg_tag = generate_registration_tag(k_auth, salt, username);
+    let password_ok = current_reg_tag.ct_eq(stored_verification_tag);
+
+    let expected_response = calculate_challenge_response(k_auth, challenge);
+    let challenge_ok = client_response.ct_eq(&expected_response);
+
+    (password_ok & challenge_ok).into()
 }
 
 pub fn encrypt_payload(
@@ -243,7 +251,6 @@ mod tests {
     fn test_keys_lifecycle_and_zeroize() {
         // 1. Create VaultKeys simulating a login
         let vk = VaultKeys {
-            k_storage: Some(SecretBox::new(Box::new([1u8; 32]))),
             k_auth: Some(SecretBox::new(Box::new([2u8; 32]))),
             kek: Some(SecretBox::new(Box::new([3u8; 32]))),
             search_key: Some(SecretBox::new(Box::new([4u8; 32]))),

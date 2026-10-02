@@ -34,7 +34,7 @@ pub fn init_auth_db(path: &Path) -> Result<Connection, VaultError> {
         id INTEGER PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
         salt BLOB NOT NULL,
-        auth_key BLOB NOT NULL
+        verification_tag BLOB NOT NULL
     )",
         (),
     )?;
@@ -65,11 +65,11 @@ pub fn save_new_user(
     conn: &Connection,
     username: &str,
     salt: &[u8],
-    auth_key: &[u8; 32],
+    verification_tag: &[u8; 32],
 ) -> Result<(), VaultError> {
     conn.execute(
-        "INSERT INTO users (username, salt, auth_key) VALUES  (?1, ?2, ?3)",
-        (username, salt, auth_key.as_slice()),
+        "INSERT INTO users (username, salt, verification_tag) VALUES  (?1, ?2, ?3)",
+        (username, salt, verification_tag.as_slice()),
     )?;
     Ok(())
 }
@@ -77,17 +77,21 @@ pub fn save_new_user(
 pub fn get_user_auth_key(
     conn: &Connection,
     username: &str,
-) -> Result<(Vec<u8>, Vec<u8>), crate::backend::VaultError> {
+) -> Result<(Vec<u8>, [u8; 32]), crate::backend::VaultError> {
     conn.query_row(
-        "SELECT salt, auth_key FROM users WHERE username = ?1",
+        "SELECT salt, verification_tag FROM users WHERE username = ?1",
         [username],
         |row| {
             let salt: Vec<u8> = row.get(0)?;
-            let auth_key: Vec<u8> = row.get(1)?;
-            Ok((salt, auth_key))
+            let tag_bytes: Vec<u8> = row.get(1)?;
+
+            let verification_tag: [u8; 32] = tag_bytes.try_into().map_err(|_| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob,"Verification tag must be exactly 32 bytes".into()
+            ))?;
+
+            Ok((salt, verification_tag))
         },
     )
-    .map_err(|_| crate::backend::VaultError::UserNotFound(username.to_string()))
+    .map_err(|e| crate::backend::VaultError::from_db_user(e, username))
 }
 
 pub fn store_secret(
