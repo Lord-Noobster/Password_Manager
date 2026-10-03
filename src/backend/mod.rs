@@ -120,15 +120,7 @@ impl VaultManager {
             return Err(VaultError::AuthFailure);
         }
 
-        let owner_hash = crypto::obfuscate_data(
-            keys.search_key.as_ref().expect("Search key missing"),
-            user,
-            "owner",
-        );
-
-        keys.owner_id = Some(SecretString::from(owner_hash));
-
-        self.active_session = Some(crypto::SessionKeys::from(keys));
+        self.active_session = Some(crypto::SessionKeys::try_from(keys)?);
         Ok(())
     }
 
@@ -143,11 +135,10 @@ impl VaultManager {
             .as_ref()
             .ok_or(VaultError::AuthFailure)?;
 
-        let owner_id = keys.owner_id.expose_secret(); // can i wait and expose it later?
+        let service_name_hash =
+            crypto::obfuscate_data(&keys.search_key, service_name, "service", user);
 
-        let service_name_hash = crypto::obfuscate_data(&keys.search_key, service_name, "service");
-
-        let username_hash = crypto::obfuscate_data(&keys.search_key, user, "account");
+        let username_hash = crypto::obfuscate_data(&keys.owner_id, user, "account", service_name);
 
         let secret_dek = crypto::generate_secret_dek()?;
 
@@ -161,7 +152,6 @@ impl VaultManager {
 
         let entry = VaultEntry {
             id: None,
-            owner_id: owner_id.to_string(),
             service_name: service_name_hash,
             username: username_hash,
             ciphertext: encrypted_payload,
@@ -192,15 +182,11 @@ impl VaultManager {
             .active_session
             .as_ref()
             .ok_or(VaultError::AuthFailure)?;
-        let owner_id_hash = keys.owner_id.expose_secret();
-        let service_name_hash = crypto::obfuscate_data(&keys.search_key, service_name, "service");
-        let username_hash = crypto::obfuscate_data(&keys.search_key, username, "account");
-        let entry = db::get_secret(
-            &self.vault_db,
-            owner_id_hash,
-            &service_name_hash,
-            &username_hash,
-        )?;
+        let service_name_hash =
+            crypto::obfuscate_data(&keys.search_key, service_name, "service", username);
+        let username_hash =
+            crypto::obfuscate_data(&keys.owner_id, username, "account", service_name);
+        let entry = db::get_secret(&self.vault_db, &service_name_hash, &username_hash)?;
         let secret_dek = crypto::decrypt_dek(&entry.wrapped_dek, &keys.kek, &entry.dek_nonce)?;
         let secret_password =
             crypto::decrypt_payload(&entry.ciphertext, &entry.payload_nonce, &secret_dek)?;
