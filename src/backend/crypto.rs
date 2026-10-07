@@ -52,7 +52,7 @@ impl TryFrom<VaultKeys> for SessionKeys {
 
     #[inline(never)]
     fn try_from(mut vk: VaultKeys) -> Result<Self, Self::Error> {
-        let k_auth = vk.k_auth.take();
+        let _k_auth = vk.k_auth.take();
 
         let kek = vk.kek.take().ok_or_else(|| {
             VaultError::CryptoError("KEK missing under session conversion".into())
@@ -302,7 +302,7 @@ mod tests {
         };
 
         // 2. Transition to SessionKeys
-        let sk = SessionKeys::from(vk);
+        let sk = SessionKeys::try_from(vk);
 
         // 3. Verify logic: sk should have the keys, vk is dropped
         assert_eq!(sk.owner_id.expose_secret(), "owner");
