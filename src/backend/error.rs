@@ -44,14 +44,7 @@ impl VaultError {
     pub fn from_db_user(err: rusqlite::Error, username: &str) -> Self {
         match err {
             rusqlite::Error::QueryReturnedNoRows => VaultError::UserNotFound(username.to_string()),
-            rusqlite::Error::FromSqlConversionFailure(_, _, ref msg)
-                if msg.to_string().contains("32 bytes") =>
-            {
-                VaultError::IntegrityError(format!(
-                    "the user's '{}'s verification tag is corrupted or has been manipulated",
-                    username
-                ))
-            }
+
             other_err => VaultError::SqliteError(other_err),
         }
     }

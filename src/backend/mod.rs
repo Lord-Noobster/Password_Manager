@@ -83,11 +83,15 @@ impl VaultManager {
 
         let keys = crypto::derive_keys(pass, salt.as_slice())?;
 
-        //HMAC Challenge!
-        let k_auth = keys.k_auth.as_ref().expect("Auth Key missing");
-        let verification_tag = crypto::generate_registration_tag(k_auth, &salt, user);
+        let kek = keys
+            .kek
+            .as_ref()
+            .ok_or_else(|| VaultError::CryptoError("KEK missing".into()))?;
 
-        let save_user = db::save_new_user(&self.auth_db, user, &salt, &verification_tag);
+        let canary_nonce = crypto::generate_random_bytes::<12>();
+        let canary_ct = crypto::create_canary(kek, &canary_nonce, user)?;
+
+        let save_user = db::save_new_user(&self.auth_db, user, &salt, &canary_nonce, &canary_ct);
 
         if let Err(e) = save_user {
             if e.to_string().contains("UNIQUE constraint failed") {
@@ -100,25 +104,17 @@ impl VaultManager {
     }
 
     pub fn handle_login(&mut self, user: &str, pass: &SecretString) -> Result<(), VaultError> {
-        let (salt, stored_verification_tag) = db::get_user_auth_key(&self.auth_db, user)?;
+        let auth = db::get_user_auth(&self.auth_db, user)?;
 
-        let mut keys = crypto::derive_keys(pass, &salt)?;
+        //let (salt, canary_nonce, canary_ct) = db::get_user_auth(&self.auth_db, user)?;
 
-        let session_challenge = crypto::generate_random_bytes::<32>();
-        let k_auth = keys.k_auth.as_ref().expect("Auth key missing");
+        let keys = crypto::derive_keys(pass, &auth.salt)?;
+        let kek = keys
+            .kek
+            .as_ref()
+            .ok_or_else(|| VaultError::CryptoError("KEK missing".into()))?;
 
-        let client_response = crypto::calculate_challenge_response(k_auth, &session_challenge);
-
-        if !crypto::verify_hmac_challenge(
-            k_auth,
-            &session_challenge,
-            &client_response,
-            &stored_verification_tag,
-            &salt,
-            user,
-        ) {
-            return Err(VaultError::AuthFailure);
-        }
+        crypto::verify_canary(kek, &auth.canary_nonce, &auth.canary_ct, user)?;
 
         self.active_session = Some(crypto::SessionKeys::try_from(keys)?);
         Ok(())

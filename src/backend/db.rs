@@ -14,6 +14,12 @@ pub struct VaultEntry {
     pub dek_nonce: [u8; 12],  // to 'detach' from the password
 }
 
+pub struct UserAuth {
+    pub salt: Vec<u8>,
+    pub canary_nonce: [u8; 12],
+    pub canary_ct: Vec<u8>,
+}
+
 fn blob_to_nonce(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<[u8; 12]> {
     let bytes: Vec<u8> = row.get(idx)?;
     bytes.try_into().map_err(|_| {
@@ -33,7 +39,8 @@ pub fn init_auth_db(path: &Path) -> Result<Connection, VaultError> {
         id INTEGER PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
         salt BLOB NOT NULL,
-        verification_tag BLOB NOT NULL
+        canary_nonce BLOB NOT NULL,
+        canary_ct BLOB NOT NULL
     )",
         (),
     )?;
@@ -63,34 +70,36 @@ pub fn save_new_user(
     conn: &Connection,
     username: &str,
     salt: &[u8],
-    verification_tag: &[u8; 32],
+    canary_nonce: &[u8; 12],
+    canary_ct: &[u8],
 ) -> Result<(), VaultError> {
     conn.execute(
-        "INSERT INTO users (username, salt, verification_tag) VALUES  (?1, ?2, ?3)",
-        (username, salt, verification_tag.as_slice()),
+        "INSERT INTO users (username, salt, canary_nonce, canary_ct) VALUES  (?1, ?2, ?3, ?4)",
+        (username, salt, canary_nonce.as_slice(), canary_ct),
     )?;
     Ok(())
 }
 
-pub fn get_user_auth_key(
+pub fn get_user_auth(
     conn: &Connection,
     username: &str,
-) -> Result<(Vec<u8>, [u8; 32]), crate::backend::VaultError> {
+) -> Result<UserAuth, VaultError> {
     conn.query_row(
-        "SELECT salt, verification_tag FROM users WHERE username = ?1",
+        "SELECT salt, canary_nonce, canary_ct FROM users WHERE username = ?1",
         [username],
         |row| {
-            let salt: Vec<u8> = row.get(0)?;
-            let tag_bytes: Vec<u8> = row.get(1)?;
-
-            let verification_tag: [u8; 32] = tag_bytes.try_into().map_err(|_| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob,"Verification tag must be exactly 32 bytes".into()
-            ))?;
-
-            Ok((salt, verification_tag))
+                Ok(UserAuth {
+                    salt: row.get(0)?,
+                    canary_nonce: blob_to_nonce(row, 1)?,
+                    canary_ct: row.get(2)?,
+            })
         },
+
+
     )
-    .map_err(|e| crate::backend::VaultError::from_db_user(e, username))
+        .map_err(|e| VaultError::from_db_user(e, username))
 }
+
 
 pub fn store_secret(
     conn: &Connection, entry: VaultEntry

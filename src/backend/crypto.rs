@@ -4,6 +4,7 @@ use std::{convert::TryFrom, os::linux::raw}; // Depreciated
 
 use std::pin::Pin; // pin variables to memory adresses
 
+use aes_gcm::aead::Payload;
 use digest::KeyInit;
 use hmac::{Hmac, Mac};
 
@@ -29,6 +30,8 @@ use argon2::{
 
 // local error handling
 use crate::backend::VaultError;
+
+const CANARY_PLAINTEXT: &[u8] = b"vault canary v1";
 
 //should ensure that when the variables fall out of scope they will be zeroize in memory
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -168,57 +171,50 @@ pub fn derive_keys(pass: &SecretString, salt: &[u8]) -> Result<VaultKeys, VaultE
     Ok(keys)
 }
 
-pub fn generate_registration_tag(
-    k_auth: &SecretBox<[u8; 32]>,
-    salt: &[u8],
-    username: &str,
-) -> [u8; 32] {
-    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(k_auth.expose_secret())
-        .unwrap_or_else(|_| unreachable!("k_auth is guaranteed 32 bytes"));
-
-    let salt_len_bytes = (salt.len() as u64).to_le_bytes();
-    mac.update(&salt_len_bytes);
-    mac.update(salt);
-
-    let username_len_bytes = (username.len() as u64).to_le_bytes();
-    mac.update(&username_len_bytes);
-    mac.update(username.as_bytes());
-
-    mac.update(b"registration_handshake_temp");
-
-    let mut tag = zeroize::Zeroizing::new([0u8; 32]);
-    tag.copy_from_slice(mac.finalize().into_bytes().as_slice());
-    *tag
+pub fn canary_aad(username: &str) -> Vec<u8> {
+    let mut aad = b"vault-canary-v1".to_vec();
+    aad.extend_from_slice(username.as_bytes());
+    aad
 }
 
-pub fn calculate_challenge_response(
-    k_auth: &SecretBox<[u8; 32]>,
-    challenge: &[u8; 32],
-) -> [u8; 32] {
-    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(k_auth.expose_secret()).unwrap();
-    mac.update(challenge);
-    mac.update(b"login_challenge_temp");
-
-    let mut response = [0u8; 32];
-    response.copy_from_slice(mac.finalize().into_bytes().as_slice());
-    response
+pub fn create_canary(
+    kek: &SecretBox<[u8; 32]>,
+    nonce_bytes: &[u8; 12],
+    username: &str,
+) -> Result<Vec<u8>, VaultError> {
+    let key = Key::<Aes256Gcm>::from_slice(kek.expose_secret());
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: CANARY_PLAINTEXT,
+                aad: &canary_aad(username),
+            },
+        )
+        .map_err(|e| VaultError::CryptoError(format!("Canary encryption failed: {}", e)))
 }
 
-pub fn verify_hmac_challenge(
-    k_auth: &SecretBox<[u8; 32]>,
-    challenge: &[u8; 32],
-    client_response: &[u8; 32],
-    stored_verification_tag: &[u8; 32],
-    salt: &[u8],
+pub fn verify_canary(
+    kek: &SecretBox<[u8; 32]>,
+    nonce_bytes: &[u8; 12],
+    canary_ct: &[u8],
     username: &str,
-) -> bool {
-    let current_reg_tag = generate_registration_tag(k_auth, salt, username);
-    let password_ok = current_reg_tag.ct_eq(stored_verification_tag);
-
-    let expected_response = calculate_challenge_response(k_auth, challenge);
-    let challenge_ok = client_response.ct_eq(&expected_response);
-
-    (password_ok & challenge_ok).into()
+) -> Result<(), VaultError> {
+    let key = Key::<Aes256Gcm>::from_slice(kek.expose_secret());
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: canary_ct,
+                aad: &canary_aad(username),
+            },
+        )
+        .map_err(|_| VaultError::AuthFailure)?;
+    Ok(())
 }
 
 pub fn encrypt_payload(
